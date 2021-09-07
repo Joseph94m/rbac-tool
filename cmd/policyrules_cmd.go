@@ -4,16 +4,49 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
-	"sigs.k8s.io/yaml"
 	"sort"
 	"strings"
+
+	"sigs.k8s.io/yaml"
 
 	"github.com/alcideio/rbac-tool/pkg/kube"
 	"github.com/alcideio/rbac-tool/pkg/rbac"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
+
+type DetailedPolicyRule struct {
+	// Like ServiceAccount
+	UserKind string
+	// Value of UserKind
+	UserName             string
+	NamespacedPolicyRule rbac.NamespacedPolicyRule
+}
+
+// SamePermissionExists checks whether the same permission has been defined for the same user more than once
+// Returns boolean to indicate whether it does exist or not and returns the index of the PolicyRule where it was found
+// The index is used later to add an element to the Roles or ClusterRoles array
+func SamePermissionExists(rows []*DetailedPolicyRule, newRow DetailedPolicyRule) (bool, int) {
+	// we sort so we can use DeepEqual on []string
+	sort.Strings(newRow.NamespacedPolicyRule.NonResourceURLs)
+	sort.Strings(newRow.NamespacedPolicyRule.ResourceNames)
+	for i, row := range rows {
+		sort.Strings(row.NamespacedPolicyRule.NonResourceURLs)
+		sort.Strings(row.NamespacedPolicyRule.ResourceNames)
+		if row.NamespacedPolicyRule.APIGroup == newRow.NamespacedPolicyRule.APIGroup &&
+			row.NamespacedPolicyRule.Namespace == newRow.NamespacedPolicyRule.Namespace &&
+			reflect.DeepEqual(row.NamespacedPolicyRule.NonResourceURLs, newRow.NamespacedPolicyRule.NonResourceURLs) &&
+			row.NamespacedPolicyRule.Resource == newRow.NamespacedPolicyRule.Resource &&
+			reflect.DeepEqual(row.NamespacedPolicyRule.ResourceNames, newRow.NamespacedPolicyRule.ResourceNames) &&
+			row.NamespacedPolicyRule.Verb == newRow.NamespacedPolicyRule.Verb &&
+			row.UserName == newRow.UserName && row.UserKind == newRow.UserKind {
+			return true, i
+		}
+	}
+	return false, -1
+}
 
 func NewCommandPolicyRules() *cobra.Command {
 
@@ -105,21 +138,36 @@ rbac-tool policy-rules -o json  | jp "[? @.allowedTo[? (verb=='get' || verb=='*'
 				rows := [][]string{}
 
 				policies := rbac.NewSubjectPermissionsList(filteredPolicies)
-
+				// added accumulates PolicyRules and Roles/ClusterRoles
+				added := []*DetailedPolicyRule{}
 				for _, p := range policies {
 					for _, allowedTo := range p.AllowedTo {
-						row := []string{
-							p.Kind,
-							p.Name,
-							allowedTo.Verb,
-							allowedTo.Namespace,
-							allowedTo.APIGroup,
-							allowedTo.Resource,
-							strings.Join(allowedTo.ResourceNames, ","),
-							strings.Join(allowedTo.NonResourceURLs, ","),
+						notNew, index := SamePermissionExists(added, DetailedPolicyRule{UserKind: p.Kind, UserName: p.Name, NamespacedPolicyRule: allowedTo})
+						if notNew {
+							// if SamePermission exist -> add value to Roles or ClusterRoles (effectively only one will be added in an iteration)
+							added[index].NamespacedPolicyRule.Roles = append(added[index].NamespacedPolicyRule.Roles, allowedTo.Roles...)
+							added[index].NamespacedPolicyRule.ClusterRoles = append(added[index].NamespacedPolicyRule.ClusterRoles, allowedTo.ClusterRoles...)
+							continue
 						}
-						rows = append(rows, row)
+						added = append(added, &DetailedPolicyRule{NamespacedPolicyRule: allowedTo, UserName: p.Name, UserKind: p.Kind})
 					}
+				}
+				// added is used to build the rows table that will be used in rendering
+				for _, add := range added {
+					row := []string{
+						add.UserKind,
+						add.UserName,
+						add.NamespacedPolicyRule.Verb,
+						add.NamespacedPolicyRule.Namespace,
+						add.NamespacedPolicyRule.APIGroup,
+						add.NamespacedPolicyRule.Resource,
+						strings.Join(add.NamespacedPolicyRule.ResourceNames, ","),
+						strings.Join(add.NamespacedPolicyRule.NonResourceURLs, ","),
+						strings.Join(add.NamespacedPolicyRule.Roles, ","),
+						strings.Join(add.NamespacedPolicyRule.ClusterRoles, ","),
+					}
+
+					rows = append(rows, row)
 				}
 
 				sort.Slice(rows, func(i, j int) bool {
@@ -131,7 +179,7 @@ rbac-tool policy-rules -o json  | jp "[? @.allowedTo[? (verb=='get' || verb=='*'
 				})
 
 				table := tablewriter.NewWriter(os.Stdout)
-				table.SetHeader([]string{"TYPE", "SUBJECT", "VERBS", "NAMESPACE", "API GROUP", "KIND", "NAMES", "NonResourceURI"})
+				table.SetHeader([]string{"TYPE", "SUBJECT", "VERBS", "NAMESPACE", "API GROUP", "KIND", "NAMES", "NonResourceURI", "Roles", "ClusterRoles"})
 				table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 				table.SetBorder(false)
 				table.SetAlignment(tablewriter.ALIGN_LEFT)

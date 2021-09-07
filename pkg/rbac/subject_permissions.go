@@ -8,11 +8,20 @@ import (
 	"k8s.io/klog"
 )
 
+type DetailedPolicyRule struct {
+	// Holds the rule itself
+	PolicyRule v1.PolicyRule
+	//One of theses variables will be set and the other will be empty
+	//Can maybe use one variable instead and use a prefix to say it's a ClusterRole but this will require parsing later on to know if its a role or a clusterrole
+	Role        string
+	ClusterRole string
+}
+
 type SubjectPermissions struct {
 	Subject v1.Subject
 
 	//Rules Per Namespace ... "" means cluster-wide
-	Rules map[string][]v1.PolicyRule
+	Rules map[string][]DetailedPolicyRule
 }
 
 func NewSubjectPermissions(perms *Permissions) []SubjectPermissions {
@@ -47,18 +56,25 @@ func NewSubjectPermissions(perms *Permissions) []SubjectPermissions {
 				if !exist {
 					subPerms = &SubjectPermissions{
 						Subject: subject,
-						Rules:   map[string][]v1.PolicyRule{},
+						Rules:   map[string][]DetailedPolicyRule{},
 					}
 				}
 
 				rules, exist := subPerms.Rules[binding.Namespace]
 				if !exist {
-					rules = []v1.PolicyRule{}
+					rules = []DetailedPolicyRule{}
 				}
 
 				//klog.V(6).Infof("%+v --add-- %v %v", subject, len(rules), len(role.Rules))
 
-				rules = append(rules, role.Rules...)
+				for _, rule := range role.Rules {
+					if ns == "" {
+						rules = append(rules, DetailedPolicyRule{PolicyRule: rule, ClusterRole: role.Name})
+					} else {
+						rules = append(rules, DetailedPolicyRule{PolicyRule: rule, Role: role.Name})
+					}
+				}
+
 				subPerms.Rules[binding.Namespace] = rules
 				subjects[sub] = subPerms
 			}
@@ -107,6 +123,14 @@ type NamespacedPolicyRule struct {
 	// NonResourceURLs is a set of partial urls that a user should have access to.  *s are allowed, but only as the full, final step in the path
 	// Since non-resource URLs are not namespaced, this field is only applicable for ClusterRoles referenced from a ClusterRoleBinding.
 	NonResourceURLs []string `json:"nonResourceURLs,omitempty"`
+
+	// Source Roles: list of roles that give this permission.
+	// When initialized it contains 0 or 1 element. More elements can be added through compaction like in policy-rules
+	Roles []string `json:"roles,omitempty"`
+
+	// Source ClusterRoles: list of roles that give this permission.
+	// When initialized it contains 0 or 1 element. More elements can be added through compaction like in policy-rules
+	ClusterRoles []string `json:"clusterRoles,omitempty"`
 }
 
 type SubjectPolicyList struct {
@@ -127,33 +151,38 @@ func NewSubjectPermissionsList(policies []SubjectPermissions) []SubjectPolicyLis
 
 			for _, rule := range rules {
 				//Normalize the strings
-				ReplaceToCore(rule.APIGroups)
-				ReplaceToWildCard(rule.Resources)
-				ReplaceToWildCard(rule.ResourceNames)
-				ReplaceToWildCard(rule.Verbs)
-				ReplaceToWildCard(rule.NonResourceURLs)
+				ReplaceToCore(rule.PolicyRule.APIGroups)
+				ReplaceToWildCard(rule.PolicyRule.Resources)
+				ReplaceToWildCard(rule.PolicyRule.ResourceNames)
+				ReplaceToWildCard(rule.PolicyRule.Verbs)
+				ReplaceToWildCard(rule.PolicyRule.NonResourceURLs)
 
-				sort.Strings(rule.APIGroups)
-				sort.Strings(rule.Resources)
-				sort.Strings(rule.ResourceNames)
-				sort.Strings(rule.Verbs)
-				sort.Strings(rule.NonResourceURLs)
+				sort.Strings(rule.PolicyRule.APIGroups)
+				sort.Strings(rule.PolicyRule.Resources)
+				sort.Strings(rule.PolicyRule.ResourceNames)
+				sort.Strings(rule.PolicyRule.Verbs)
+				sort.Strings(rule.PolicyRule.NonResourceURLs)
+				for _, verb := range rule.PolicyRule.Verbs {
 
-				for _, verb := range rule.Verbs {
-
-					if len(rule.NonResourceURLs) == 0 {
+					if len(rule.PolicyRule.NonResourceURLs) == 0 {
 						// The common case ... let's flatten the rule
-						for _, apiGroup := range rule.APIGroups {
-							for _, resource := range rule.Resources {
+						for _, apiGroup := range rule.PolicyRule.APIGroups {
+							for _, resource := range rule.PolicyRule.Resources {
 								subjectPolicy := NamespacedPolicyRule{
 									Namespace:       namespace,
 									Verb:            verb,
 									APIGroup:        apiGroup,
 									Resource:        resource,
-									ResourceNames:   rule.ResourceNames,
-									NonResourceURLs: rule.NonResourceURLs,
+									ResourceNames:   rule.PolicyRule.ResourceNames,
+									NonResourceURLs: rule.PolicyRule.NonResourceURLs,
 								}
-
+								// testing if it's empty prevents from adding empty values that will later need removal
+								if rule.Role != "" {
+									subjectPolicy.Roles = []string{rule.Role}
+								}
+								if rule.ClusterRole != "" {
+									subjectPolicy.ClusterRoles = []string{rule.ClusterRole}
+								}
 								nsrules = append(nsrules, subjectPolicy)
 							}
 
@@ -163,9 +192,14 @@ func NewSubjectPermissionsList(policies []SubjectPermissions) []SubjectPolicyLis
 						subjectPolicy := NamespacedPolicyRule{
 							Namespace:       namespace,
 							Verb:            verb,
-							NonResourceURLs: rule.NonResourceURLs,
+							NonResourceURLs: rule.PolicyRule.NonResourceURLs,
 						}
-
+						if rule.Role != "" {
+							subjectPolicy.Roles = []string{rule.Role}
+						}
+						if rule.ClusterRole != "" {
+							subjectPolicy.ClusterRoles = []string{rule.ClusterRole}
+						}
 						nsrules = append(nsrules, subjectPolicy)
 					}
 				}
