@@ -279,11 +279,11 @@ func (kubeClient *KubeClient) Resolve(verb, groupresource string, subResource st
 				Resource: strings.ToLower(apiResource.Name),
 			}
 
-			possibleVerbs := sets.NewString(apiResource.Verbs...)
-			if !possibleVerbs.Has(strings.ToLower(verb)) {
-				klog.V(8).Infof("skip - gr=%v is not in [%v]", gr.String(), strings.Join(possibleVerbs.List(), ","))
-				return r, fmt.Errorf("The verb '%s' is not supported by %v", strings.ToLower(verb), r.String())
-			}
+			//	possibleVerbs := sets.NewString(apiResource.Verbs...)
+			//	if !possibleVerbs.Has(strings.ToLower(verb)) {
+			//		klog.V(8).Infof("skip - gr=%v is not in [%v]", gr.String(), strings.Join(possibleVerbs.List(), ","))
+			//		return r, fmt.Errorf("The verb '%s' is not supported by %v", strings.ToLower(verb), r.String())
+			//	}
 
 			//We have a match
 			return r, nil
